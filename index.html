@@ -1,0 +1,1633 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapa de Valencia - Metro y Valenbisi</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous">
+    
+<style>
+
+
+/* 
+
+TO DO:
+
+			Borrar rutas con la lupita!!
+			esperar a todas para imprimir la tabla
+
+*/
+
+
+    #map {
+        width: 100%;
+        height: 100vh;
+        position: relative;
+    }
+
+    .logo { 
+        height: 200px;
+        width: auto;
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        z-index: 1000; 
+        pointer-events: none; /* Permite clics en el mapa debajo */
+    }
+
+    .distance-info {
+        position: absolute;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: white;
+        padding: 10px;
+        border-radius: 5px;
+        z-index: 1000;
+    }
+
+    .transport-selector {
+        position: absolute;
+        bottom: 50px;
+        right: 10px;
+        background: white;
+        padding: 10px;
+        border-radius: 5px;
+        z-index: 1000;
+    }
+    
+
+	
+.directions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 400px;
+    position: absolute;
+    top: 20px;
+    left: 70px;
+    background: rgba(73, 163, 13, 0.8); /* Verde con opacidad */
+    padding: 15px;
+    border-radius: 8px;
+    z-index: 1000;
+}
+
+/* Contenedor de cada input y su label */
+.input-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+}
+
+/* Estilo para los labels */
+.input-container label {
+    width: 60px; /* Ancho fijo para alinear los textos */
+    font-weight: bold;
+    color: white;
+}
+
+/* Estilo para los inputs */
+.input-container input {
+    flex-grow: 1;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    outline: none;
+}
+
+/* Estilo del botón de búsqueda (lupa) */
+.search-icon {
+    cursor: pointer;
+    font-size: 20px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border-radius: 50%;
+    transition: background 0.3s ease;
+    margin-left: auto; /* Alinea a la derecha */
+}
+
+/* Hover: Fondo blanco cuando pasas el ratón */
+.search-icon:hover {
+    background: white;
+}
+
+
+	
+
+    
+</style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="distance-info" id="distance-info">Seleccione dos puntos para calcular la distancia.</div>
+
+  <header>
+      <img src="img/logo1.png" alt="Logo" class="logo">
+  </header>
+
+  <div class="transport-selector">
+      <div class="control-panel">
+          <label for="transport-select">Seleccionar una vista del mapa:</label>
+          <select id="transport-select">
+              <option value="none" selected>Mapa simple</option>
+              
+              <option value="metro">Metro</option>
+              <option value="bus">Autobuses</option>
+              <option value="bici">Valenbisi</option>
+          </select>
+      </div>
+
+      
+  </div>
+  
+  
+<div class="directions">
+    <div class="input-container">
+        <label for="origin-input">Origen</label>
+        <input id="origin-input" type="text" placeholder="Elige un punto de origen">
+    </div>
+
+    <div class="input-container">
+        <label for="destination-input">Destino</label>
+        <input id="destination-input" type="text" placeholder="Elige un destino">
+    </div>
+
+    <span id="set-directions" class="search-icon">🔍</span>
+</div>
+
+
+
+
+  <!-- Bloque de direcciones -->
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCzX88lbn1Xa_pouaPX4k_4IjRuJsjB064&libraries=geometry,places"></script>
+
+
+<script>
+    let map = L.map('map', {
+        minZoom: 10,
+        maxBounds: [[39.059009, -1.437558], [39.937940, 0.747262]]
+    }).setView([39.4699, -0.3763], 13);
+
+    // Capa base de Tracestack Topo
+    L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://hotosm.org">Humanitarian OpenStreetMap Team</a>'
+    }).addTo(map);
+
+        let pointA = null;
+        let pointB = null;
+        let markerA = null;
+        let markerB = null;
+        let routePolyline = [];
+        let markers = []; // Guarda todos los marcadores
+        let valenbisiStations = []; // Almacenar estaciones de Valenbisi
+        let transportMode = "TRANSIT";
+
+        var directionsService = new google.maps.DirectionsService();
+        var service = new google.maps.DistanceMatrixService();
+
+        // Función para crear un marcador en Leaflet
+        function createMarker(latlng, color) {
+          return L.marker(latlng, {
+            icon: L.icon({
+              iconUrl: `https://maps.google.com/mapfiles/ms/icons/${color}-dot.png`,
+              iconSize: [32, 32],
+              iconAnchor: [16, 32]
+            })
+          }).addTo(map);
+        }
+
+        // Función principal que calcula distancias y rutas
+        function calculateDistanceAndRoute() {
+          if (!pointA || !pointB) return;
+
+          const origin = new google.maps.LatLng(pointA.lat, pointA.lng);
+          const destination = new google.maps.LatLng(pointB.lat, pointB.lng);
+
+          if (transportMode === "COMPARA") {
+        	  let modes = ["WALKING", "DRIVING", "BICYCLING", "BICI", "METRO", "BUS"];
+        	    let results = [];
+        	    let completedRequests = 0;
+
+        	    modes.forEach(mode => {
+        	        if (mode === "BICI") {
+        	            if (!valenbisiStations || valenbisiStations.length === 0) {
+        	                console.error("No hay estaciones de Valenbisi disponibles.");
+        	                completedRequests++;
+        	                if (completedRequests === modes.length) {
+        	                    mostrarTablaResultados(results);
+        	                }
+        	                return;
+        	            }
+
+        	            findNearestStationOptimized(pointA, function(startStation) {
+        	                if (!startStation) {
+        	                    console.error("No se encontró estación inicial cerca de pointA.");
+        	                    completedRequests++;
+        	                    return;
+        	                }
+
+        	                findNearestStationOptimized(pointB, function(endStation) {
+        	                    if (!endStation) {
+        	                        console.error("No se encontró estación final cerca de pointB.");
+        	                        completedRequests++;
+        	                        return;
+        	                    }
+
+        	                    let walkingRoute1 = { origin: pointA, destination: startStation };
+        	                    let cyclingRoute  = { origin: startStation, destination: endStation };
+        	                    let walkingRoute2 = { origin: endStation, destination: pointB };
+
+        	                    let distanciaTotal = 0;
+        	                    let duracionTotal = 0;
+
+        	                    calculateRouteBici(walkingRoute1, "WALKING", "green", function(distancia1, duracion1) {
+        	                    	console.log("desde solo el calculate: " + distancia1);
+        	                        distanciaTotal += distancia1;
+        	                        duracionTotal += duracion1;
+
+        	                        calculateRouteBici(cyclingRoute, "BICYCLING", "blue", function(distancia2, duracion2) {
+        	                        	console.log("desde solo el calculate: " + distancia2);
+        	                            distanciaTotal += distancia2;
+        	                            duracionTotal += duracion2;
+
+        	                            calculateRouteBici(walkingRoute2, "WALKING", "green", function(distancia3, duracion3) {
+        	                            	console.log("desde solo el calculate: " + distancia3);
+        	                                distanciaTotal += distancia3;
+        	                                duracionTotal += duracion3;
+        	                                
+        	                                
+        	                                
+        	                                console.log(distanciaTotal); 
+
+
+        	                                results.push({
+        	                                    mode: "Valenbici",
+        	                                    distanceText: (distanciaTotal / 1000).toFixed(2) + " km",
+        	                                    durationText: Math.round(duracionTotal / 60) + " min",
+        	                                    co2Emissions: "0g/km"
+        	                                });
+
+        	                                completedRequests++;
+        	                                if (completedRequests === modes.length) {
+        	                                    mostrarTablaResultados(results);
+        	                                }
+        	                            });
+        	                        });
+        	                    });
+        	                });
+        	            });
+        	        }
+        	        else if (mode === "METRO") {
+        	            let startMetroStation = findNearestMetroStation(pointA);
+        	            if (!startMetroStation) {
+        	                console.error("No se encontró estación de metro cercana a pointA.");
+        	                completedRequests++;
+        	                return;
+        	            }
+
+        	            let endMetroStation = findNearestMetroStation(pointB);
+        	            if (!endMetroStation) {
+        	                console.error("No se encontró estación de metro cercana a pointB.");
+        	                completedRequests++;
+        	                return;
+        	            }
+
+        	            let metroRoute = calculateMetroRoute(startMetroStation, endMetroStation);
+        	            if (!metroRoute || metroRoute.length === 0) {
+        	                console.error("No se pudo calcular la ruta de metro entre las estaciones.");
+        	                completedRequests++;
+        	                return;
+        	            }
+
+        	            let walkingRoute1 = { origin: pointA, destination: startMetroStation };
+        	            let walkingRoute2 = { origin: endMetroStation, destination: pointB };
+
+        	            let distanciaTotal = lastMetroDistance; // Se calcula dentro de calculateMetroRoute
+        	            let duracionTotal = (lastMetroDistance / 500) * 60; // Aproximando 500 m/min de velocidad media
+
+        	            calculateRouteBici(walkingRoute1, "WALKING", "green", function(distancia, duracion) {
+        	                distanciaTotal += distancia;
+        	                duracionTotal += duracion;
+        	            });
+
+        	            calculateRouteBici(walkingRoute2, "WALKING", "green", function(distancia, duracion) {
+        	                distanciaTotal += distancia;
+        	                duracionTotal += duracion;
+							
+ 	                
+        	                
+        	                results.push({
+        	                    mode: "Metro",
+        	                    distanceText: (distanciaTotal / 1000).toFixed(2) + " km",
+        	                    durationText: Math.round(duracionTotal / 60) + " min",
+        	                    co2Emissions: "10g/km" // Valor estimado
+        	                });
+
+        	                
+        	                if (++completedRequests === modes.length) {
+        	                    mostrarTablaResultados(results);
+        	                }
+        	            });
+
+        	           // drawMetroRoute(metroRoute, "red");
+
+        	        }
+        	        else if (mode === "BUS") {
+        	            const distanceRequest = {
+        	                origins: [origin],
+        	                destinations: [destination],
+        	                travelMode: google.maps.TravelMode.TRANSIT,
+        	                unitSystem: google.maps.UnitSystem.METRIC,
+        	                transitOptions: { modes: ['BUS'] }
+        	            };
+
+        	            service.getDistanceMatrix(distanceRequest, (response, status) => {
+        	                if (status === "OK" && response.rows.length > 0) {
+        	                    let distanceText = response.rows[0].elements[0].distance.text;
+        	                    let durationText = response.rows[0].elements[0].duration.text;
+
+        	                    results.push({
+        	                        mode: "Autobús",
+        	                        distanceText: distanceText,
+        	                        durationText: durationText,
+        	                        co2Emissions: "80g/km" // Valor estimado
+        	                    });
+
+        	                    if (++completedRequests === modes.length) {
+        	                        mostrarTablaResultados(results);
+        	                    }
+        	                } else {
+        	                    console.error("Error en la solicitud a Google Maps Distance Matrix:", status);
+        	                    completedRequests++;
+        	                }
+        	            });
+
+        	            const directionsRequest = {
+        	                origin: origin,
+        	                destination: destination,
+        	                travelMode: google.maps.TravelMode.TRANSIT,
+        	                transitOptions: { modes: ['BUS'] }
+        	            };
+
+        	            directionsService.route(directionsRequest, (result, status) => {
+        	                if (status === "OK") {
+        	                 //   console.log(result);
+
+
+
+        	                    const steps = result.routes[0].legs[0].steps;
+
+        	                    steps.forEach(step => {
+        	                        let color = step.travel_mode === 'TRANSIT' ? 'blue' : 'green';
+
+        	                        const stepCoords = decodePolyline(step.polyline.points).map(point => [point.lat, point.lng]);
+
+        	                       
+        	                    });
+
+        	                    
+        	                } else {
+        	                    console.error("Error al obtener la ruta de Google Maps Directions:", status);
+        	                }
+        	            });
+
+        	        }
+        	        else {
+        	            const request = {
+        	                origins: [origin],
+        	                destinations: [destination],
+        	                travelMode: google.maps.TravelMode[mode],
+        	                unitSystem: google.maps.UnitSystem.METRIC
+        	            };
+
+        	            service.getDistanceMatrix(request, (response, status) => {
+        	                if (status === "OK" && response.rows.length > 0) {
+        	                    let element = response.rows[0].elements[0];
+        	                    let distanceText = element.distance.text;
+        	                    let durationText = element.duration.text;
+        	                    let co2Emissions = mode === "DRIVING" ? "140g/km" : "0g/km";
+
+        	                    let modeTranslation = {
+        	                        "WALKING": "Andando",
+        	                        "BICYCLING": "Bicicleta",
+        	                        "DRIVING": "Coche"
+        	                    };
+
+        	                    results.push({ mode: modeTranslation[mode], distanceText, durationText, co2Emissions });
+        	                } else {
+        	                    console.error("Error en la solicitud a Google Maps Distance Matrix:", status);
+        	                }
+        	                completedRequests++;
+        	                if (completedRequests === modes.length) {
+        	                    mostrarTablaResultados(results);
+        	                }
+        	            });
+        	        }
+        	    });
+        	}
+
+          else if (transportMode === "BICI") {
+            if (!valenbisiStations || valenbisiStations.length === 0) {
+              console.error("No hay estaciones de Valenbisi disponibles.");
+              return;
+            }
+            
+            document.getElementById("transport-select").value = "bici";
+            toggleTransport("bici");
+
+            // Aquí todo el código dependiente de las estaciones se coloca dentro de la cadena de callbacks
+            findNearestStationOptimized(pointA, function(startStation) {
+              if (!startStation) {
+                console.error("No se encontró estación inicial cerca de pointA.");
+                return;
+              }
+              //console.log("startStation asignada:", startStation);
+
+              findNearestStationOptimized(pointB, function(endStation) {
+                if (!endStation) {
+                  console.error("No se encontró estación final cerca de pointB.");
+                  return;
+                }
+               // console.log("endStation asignada:", endStation);
+
+                // Definir las rutas:
+                let walkingRoute1 = { origin: pointA, destination: startStation };
+               console.log("Origen: ", pointA, " destino: ", startStation);
+                let cyclingRoute  = { origin: startStation, destination: endStation };
+                let walkingRoute2 = { origin: endStation, destination: pointB };
+
+                // Calcular y dibujar las rutas:
+                calculateAndDrawRoute(walkingRoute1, "WALKING", "green");  // Desde pointA hasta la estación de inicio
+                calculateAndDrawRoute(cyclingRoute,  "BICYCLING", "blue");   // En bici entre estaciones
+                calculateAndDrawRoute(walkingRoute2, "WALKING", "green");    // Desde la estación final hasta pointB
+                
+                moveToMidPointMarkers(pointA, pointB);
+              });
+            });
+          }
+          else if (transportMode === "METRO") {
+        	  document.getElementById("transport-select").value = "metro";
+        	  toggleTransport("metro");
+
+        	  // 1. Encontrar la estación de metro más cercana a pointA y pointB
+        	  let startMetroStation = findNearestMetroStation(pointA);
+        	  if (!startMetroStation) {
+        	    console.error("No se encontró estación de metro cercana a pointA.");
+        	    return;
+        	  }
+
+        	  let endMetroStation = findNearestMetroStation(pointB);
+        	  if (!endMetroStation) {
+        	    console.error("No se encontró estación de metro cercana a pointB.");
+        	    return;
+        	  }
+
+        	  // 2. Calcular la ruta de metro entre la estación de inicio y la de fin
+        	  let metroRoute = calculateMetroRoute(startMetroStation, endMetroStation);
+        	  if (!metroRoute || metroRoute.length === 0) {
+        	    console.error("No se pudo calcular la ruta de metro entre las estaciones.");
+        	    return;
+        	  }
+
+        	  // 3. Definir y dibujar los tramos:
+        	  // a) Ruta caminando desde pointA hasta la estación de inicio de metro
+        	  let walkingRoute1 = {
+        	    origin: pointA,
+        	    destination: startMetroStation 
+        	  };
+        	  calculateAndDrawRoute(walkingRoute1, "WALKING", "green");
+
+        	  // b) Ruta de metro (dibujada como polilínea) siguiendo las estaciones intermedias
+        	  drawMetroRoute(metroRoute, "red");
+
+        	  // c) Ruta caminando desde la estación final de metro hasta pointB
+        	  let walkingRoute2 = {
+        	    origin: endMetroStation,
+        	    destination: pointB
+        	  };
+        	  calculateAndDrawRoute(walkingRoute2, "WALKING", "green");
+
+        	  moveToMidPointMarkers(pointA, pointB);
+        	}
+          else  if (transportMode === "BUS") {
+        	  
+        	  document.getElementById("transport-select").value = "bus";
+        	  toggleTransport("bus");
+            // Resto de modos de transporte (por ejemplo, TRANSIT, DRIVING, etc.)
+        	  const distanceRequest = {
+        			  origins: [origin],
+        			  destinations: [destination],
+        			  travelMode: google.maps.TravelMode[transportMode] || "TRANSIT",
+        			  unitSystem: google.maps.UnitSystem.METRIC,
+        			  transitOptions: {
+        			    modes: ['BUS']  
+        			  }
+        			};
+
+        			service.getDistanceMatrix(distanceRequest, (response, status) => {
+        			  if (status === "OK" && response.rows.length > 0) {
+        			    let distanceText = response.rows[0].elements[0].distance.value;
+        			    document.getElementById('distance-info').innerText = `Distancia: ${(distanceText / 1000).toFixed(2)} km`;
+        			  } else {
+        			    console.error("Error en la solicitud a Google Maps Distance Matrix:", status);
+        			  }
+        			});
+
+        			const directionsRequest = {
+        			  origin: origin,
+        			  destination: destination,
+        			  travelMode: google.maps.TravelMode[transportMode] || "TRANSIT",
+        			  transitOptions: {
+        			    modes: ['BUS']  // Forzar solo el autobús como modo de transporte
+        			  }
+        			};
+
+        			directionsService.route(directionsRequest, (result, status) => {
+        				  if (status === "OK") {
+        				    console.log(result);
+
+        				    // Limpiar las rutas anteriores
+        				    if (routePolyline) {
+        				      routePolyline.forEach(item => {
+        				        map.removeLayer(item);
+        				      });
+        				    }
+
+        				    // Recorrer los pasos de la ruta
+        				    const steps = result.routes[0].legs[0].steps;
+
+        				    // Recorrer cada paso y dibujar la polilínea correspondiente según el modo de transporte
+        				    steps.forEach(step => {
+        				      let color = 'green';  // Color por defecto (caminar)
+								console.log(step.travel_mode);
+        				      // Si el paso es de tipo 'TRANSIT' (transporte público)
+        				      if (step.travel_mode === 'TRANSIT') {
+
+        				            color = 'blue';
+        				       
+        				      }
+
+        				      // Decodificar el polyline de Google Maps (para obtener los puntos de la ruta)
+        				      const stepCoords = decodePolyline(step.polyline.points).map(point => [point.lat, point.lng]);
+
+        				      // Dibujar la polilínea del paso con el color correspondiente
+        				      routePolyline.push(L.polyline(stepCoords, { color: color, weight: 4 }).addTo(map));
+        				    });
+
+        				    // Función para mover el mapa al punto medio de las rutas
+        				    moveToMidPointMarkers(pointA, pointB);
+        				  } else {
+        				    console.error("Error al obtener la ruta de Google Maps Directions:", status);
+        				  }
+        				});
+          }
+         
+        	  
+              else {
+            	  document.getElementById("transport-select").value = "none";
+            	  toggleTransport("none");
+                  // Resto de modos de transporte (por ejemplo, TRANSIT, DRIVING, etc.)
+                  const distanceRequest = {
+                    origins: [origin],
+                    destinations: [destination],
+                    travelMode: google.maps.TravelMode[transportMode] || "TRANSIT",
+                    unitSystem: google.maps.UnitSystem.METRIC
+                  };
+
+                  service.getDistanceMatrix(distanceRequest, (response, status) => {
+                    if (status === "OK" && response.rows.length > 0) {
+                      let distanceText = response.rows[0].elements[0].distance.text;
+                      document.getElementById('distance-info').innerText = `Distancia: ${distanceText}`;
+                    } else {
+                      console.error("Error en la solicitud a Google Maps Distance Matrix:", status);
+                    }
+                  });
+
+                  const directionsRequest = {
+                    origin: origin,
+                    destination: destination,
+                    travelMode: google.maps.TravelMode[transportMode] || "TRANSIT"
+                  };
+
+                  directionsService.route(directionsRequest, (result, status) => {
+                    if (status === "OK") {
+                      if (routePolyline) {
+                        map.removeLayer(routePolyline);
+                      }
+                      moveToMidPointMarkers(pointA, pointB);
+                      const routeCoords = result.routes[0].overview_path.map(point => [point.lat(), point.lng()]);
+                      routePolyline.push(L.polyline(routeCoords, { color: 'blue', weight: 4 }).addTo(map));
+                    } else {
+                      console.error("Error al obtener la ruta de Google Maps Directions:", status);
+                    }
+                  });
+                } 
+        	  
+          
+        }
+        
+        function decodePolyline(encoded) {
+        	  const len = encoded.length;
+        	  const points = [];
+        	  let index = 0;
+        	  let lat = 0;
+        	  let lng = 0;
+
+        	  while (index < len) {
+        	    let b, shift = 0, result = 0;
+        	    do {
+        	      b = encoded.charCodeAt(index++) - 63;
+        	      result |= (b & 0x1f) << shift;
+        	      shift += 5;
+        	    } while (b >= 0x20);
+        	    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+
+        	    shift = 0;
+        	    result = 0;
+        	    do {
+        	      b = encoded.charCodeAt(index++) - 63;
+        	      result |= (b & 0x1f) << shift;
+        	      shift += 5;
+        	    } while (b >= 0x20);
+        	    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+
+        	    points.push({ lat: lat / 1E5, lng: lng / 1E5 });
+        	  }
+        	  return points;
+        	}
+
+        
+        
+        // €€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€
+        
+        
+function findNearestMetroStation(point) {
+  let nearest = null;
+  //console.log(stationUsage);
+  let minDistance = Infinity;
+  Object.keys(stationUsage).forEach(stationName => {
+    let station = stationUsage[stationName];
+    console.log(station);
+    let dist = haversineDistance(point, station);
+    if (dist < minDistance) {
+      minDistance = dist;
+      nearest = station;
+    }
+  });
+  console.log(nearest);
+  return nearest;
+}
+
+// Función sencilla para calcular la distancia (puedes reemplazarla por la fórmula de Haversine si lo prefieres)
+
+
+/*
+  Calcula la ruta de metro entre dos estaciones.
+  - Si ambas estaciones comparten línea, se extrae el tramo correspondiente.
+  - Si no comparten línea, se busca una estación de transbordo (que pertenezca a una línea común a ambas)
+    y se arma la ruta en dos tramos.
+*/
+let lastMetroDistance = 0;
+let distancia_total = 0;
+let segundos_total = 0;
+
+function calculateMetroRoute(startStation, endStation) {
+  let route = [];
+  
+  // 1. Verificar si comparten alguna línea
+  let commonLine = startStation.lines.find(line => endStation.lines.includes(line));
+  if (commonLine) {
+    console.log("Están en la misma línea");
+    route = getRouteForLine(commonLine, startStation.name, endStation.name);
+  } else {
+    console.log("NO están en la misma línea");
+    // 2. Buscar estación de transbordo
+    let transferStationName = null;
+    startStation.lines.forEach(lineA => {
+      metroStations[lineA].forEach(stationName => {
+        if (
+          stationUsage[stationName] &&
+          stationUsage[stationName].lines.some(line => endStation.lines.includes(line))
+        ) {
+          if (!transferStationName) transferStationName = stationName;
+        }
+      });
+    });
+    if (!transferStationName) {
+      return [];
+    }
+
+    // 3. Calcular tramo A -> Transfer
+    let lineA = startStation.lines.find(line => stationUsage[transferStationName].lines.includes(line));
+    let routeA = getRouteForLine(lineA, startStation.name, transferStationName);
+
+    // 4. Calcular tramo Transfer -> B
+    let lineB = endStation.lines.find(line => stationUsage[transferStationName].lines.includes(line));
+    let routeB = getRouteForLine(lineB, transferStationName, endStation.name);
+
+    // 5. Quitar estación duplicada y unir rutas
+    routeB.shift();
+    route = routeA.concat(routeB);
+  }
+
+  // 6. Calcular la distancia total del recorrido (en metros) y almacenarla en lastMetroDistance
+  let totalDistKm = 0;  
+  for (let i = 0; i < route.length - 1; i++) {
+    // haversineDistance usa {lat, lng}, pero en route tenemos {lat, lon}.
+    // Convertimos 'lon' a 'lng' para cada punto.
+    const coord1 = { lat: route[i].lat, lng: route[i].lon };
+    const coord2 = { lat: route[i + 1].lat, lng: route[i + 1].lon };
+    totalDistKm += haversineDistance(coord1, coord2); // Devuelve distancia en km
+  }
+  lastMetroDistance = totalDistKm * 1000; // Lo convertimos a metros
+  distancia_total += lastMetroDistance;
+  console.log("Distancia total en la ruta de metro (m):", lastMetroDistance);
+
+  // 7. Retornar la secuencia de estaciones, pero no la distancia
+  return route;
+}
+
+/*
+  Devuelve la ruta (arreglo de objetos con nombre, lat y lon) para una línea determinada,
+  desde startName hasta endName siguiendo el orden definido en metroStations.
+*/
+function getRouteForLine(line, startName, endName) {
+  let stationsOrdered = metroStations[line];
+  let startIndex = stationsOrdered.indexOf(startName);
+  let endIndex = stationsOrdered.indexOf(endName);
+  if (startIndex === -1 || endIndex === -1) {
+    console.error("Estación no encontrada en la línea " + line);
+    return [];
+  }
+  let routeNames;
+  if (startIndex <= endIndex) {
+    routeNames = stationsOrdered.slice(startIndex, endIndex + 1);
+  } else {
+    routeNames = stationsOrdered.slice(endIndex, startIndex + 1).reverse();
+  }
+  return routeNames.map(name => ({ name: name, lat: stationUsage[name].lat, lon: stationUsage[name].lon }));
+}
+
+// Dibuja la ruta de metro como una polilínea en el mapa
+function drawMetroRoute(route, color) {
+  const latlngs = route.map(station => [station.lat, station.lon]);
+  routePolyline.push(L.polyline(latlngs, { color: color, weight: 5, dashArray: "5,10" }).addTo(map));
+}
+        
+        
+        // €€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€
+        
+        
+        
+
+        // Función para calcular y dibujar una ruta usando Directions y Distance Matrix
+        function calculateAndDrawRoute(route, mode, color) {
+          // Convertir y validar las coordenadas
+          const originLat = parseFloat(route.origin.lat);
+          const destinationLat = parseFloat(route.destination.lat);
+        
+          let originLng;
+          let destinationLng;
+          
+          if(route.origin.lng == null){
+        	  originLng = parseFloat(route.origin.lon);
+          }
+          else{
+              originLng = parseFloat(route.origin.lng);
+          }
+          
+         if(route.destination.lng == null){
+        	  destinationLng =  parseFloat(route.destination.lon);
+          }
+         else{
+        	 destinationLng =  parseFloat(route.destination.lng);
+         }
+         
+
+          if (isNaN(originLat) || isNaN(originLng) || isNaN(destinationLat) || isNaN(destinationLng)) {
+            console.error("Coordenadas inválidas en la ruta:", route);
+            return;
+          }
+
+          const request = {
+            origin: new google.maps.LatLng(originLat, originLng),
+            destination: new google.maps.LatLng(destinationLat, destinationLng),
+            travelMode: google.maps.TravelMode[mode]
+          };
+
+           // Inicializamos la variable
+
+          // Usar route.origin y route.destination (ya convertidos) en la solicitud
+          const distanceRequest = {
+            origins: [new google.maps.LatLng(originLat, originLng)],
+            destinations: [new google.maps.LatLng(destinationLat, destinationLng)],
+            travelMode: google.maps.TravelMode[mode],
+            unitSystem: google.maps.UnitSystem.METRIC
+          };
+
+          let distanceValue = 0;
+        	  
+          service.getDistanceMatrix(distanceRequest, (response, status) => {
+            if (status === "OK" && response.rows.length > 0) {
+            	distanceValue = response.rows[0].elements[0].distance.value;
+            	let duarationValue = response.rows[0].elements[0].duration.value;
+              console.log( "desde el draw:" + distanceValue);
+              console.log( "ruta " + response);
+              distancia_total += distanceValue;
+              segundos_total += duarationValue;
+              
+              document.getElementById('distance-info').innerText = `Distancia: ${(distancia_total/1000).toFixed(2)} km`;
+            } else {
+              console.error("Error en la solicitud a Google Maps Distance Matrix:", status);
+            }
+          });
+
+          directionsService.route(request, (result, status) => {
+            if (status === "OK") {
+              let routeCoords = result.routes[0].overview_path.map(point => [point.lat(), point.lng()]);
+              routePolyline.push(L.polyline(routeCoords, { color: color, weight: 4 }).addTo(map)) ;
+            } else {
+              console.error(`Error al calcular ruta (${mode}):`, status);
+            }
+          });
+        }
+        
+        function calculateRouteBici(route, mode, color, callback) {
+            const originLat = parseFloat(route.origin.lat);
+            const destinationLat = parseFloat(route.destination.lat);
+            
+            let originLng = route.origin.lng ?? parseFloat(route.origin.lon);
+            let destinationLng = route.destination.lng ?? parseFloat(route.destination.lon);
+
+            if (isNaN(originLat) || isNaN(originLng) || isNaN(destinationLat) || isNaN(destinationLng)) {
+                console.error("Coordenadas inválidas en la ruta:", route);
+                callback(0, 0); // Devuelve 0 si hay error
+                return;
+            }
+
+            const request = {
+                origin: new google.maps.LatLng(originLat, originLng),
+                destination: new google.maps.LatLng(destinationLat, destinationLng),
+                travelMode: google.maps.TravelMode[mode]
+            };
+
+            const distanceRequest = {
+                origins: [new google.maps.LatLng(originLat, originLng)],
+                destinations: [new google.maps.LatLng(destinationLat, destinationLng)],
+                travelMode: google.maps.TravelMode[mode],
+                unitSystem: google.maps.UnitSystem.METRIC
+            };
+
+            service.getDistanceMatrix(distanceRequest, (response, status) => {
+                if (status === "OK" && response.rows.length > 0) {
+                    let distanceValue = response.rows[0].elements[0].distance.value; // En metros
+                    let durationValue = response.rows[0].elements[0].duration.value; // En segundos
+                    
+                    // Llamamos al callback con los valores obtenidos
+                    callback(distanceValue, durationValue);
+                } else {
+                    console.error("Error en la solicitud a Google Maps Distance Matrix:", status);
+                    callback(0, 0); // Devuelve 0 si hay error
+                }
+            });
+
+            directionsService.route(request, (result, status) => {
+                if (status === "OK") {
+                    let routeCoords = result.routes[0].overview_path.map(point => [point.lat(), point.lng()]);
+           
+                } else {
+                    console.error(`Error al calcular ruta (${mode}):`, status);
+                }
+            });
+        }
+
+
+        // Función para buscar la estación de Valenbisi más cercana (usando 3 candidatos aproximados)
+        function findNearestStationOptimized(point, callback) {
+          // 1. Calcular la distancia aproximada para cada estación usando la fórmula de haversine
+          const candidates = valenbisiStations
+            .map(station => {
+              // Convertir las coordenadas de la estación (normalizamos: usamos station.lat y station.lon -> station.lng)
+              const candidateCoord = { lat: parseFloat(station.lat), lng: parseFloat(station.lon) };
+              const approxDistance = haversineDistance(point, candidateCoord);
+              return { station, approxDistance };
+            })
+            .sort((a, b) => a.approxDistance - b.approxDistance)
+            .slice(0, 3);
+
+
+
+          const originLatLng = new google.maps.LatLng(point.lat, point.lng);
+          const destinations = candidates.map(candidate =>
+            new google.maps.LatLng(parseFloat(candidate.station.lat), parseFloat(candidate.station.lon))
+          );
+
+          const distanceRequest = {
+            origins: [originLatLng],
+            destinations: destinations,
+            travelMode: google.maps.TravelMode.WALKING,
+            unitSystem: google.maps.UnitSystem.METRIC
+          };
+
+          service.getDistanceMatrix(distanceRequest, (response, status) => {
+            if (status === "OK" && response.rows.length > 0) {
+              const elements = response.rows[0].elements;
+              let bestIndex = -1;
+              let bestDistance = Infinity;
+
+              elements.forEach((element, index) => {
+                if (element.status === "OK") {
+                  const walkingDistance = element.distance.value; // en metros
+                  //console.log(`Distancia caminando a ${candidates[index].station.address}: ${walkingDistance} m`);
+                  if (walkingDistance < bestDistance) {
+                    bestDistance = walkingDistance;
+                    bestIndex = index;
+                  }
+                } else {
+                  console.warn(`No se pudo obtener la distancia para ${candidates[index].station.address}`);
+                }
+              });
+
+              if (bestIndex !== -1) {
+                const bestStation = candidates[bestIndex].station;
+                // Normalizamos el objeto de estación (convertimos 'lon' en 'lng')
+                const normalizedStation = {
+                  lat: bestStation.lat,
+                  lng: bestStation.lon,
+                  address: bestStation.address,
+                  available: bestStation.available,
+                  total: bestStation.total
+                };
+                console.log(`La estación más cercana es: ${normalizedStation.address} (${bestDistance} m caminando)`);
+                callback(normalizedStation);
+              } else {
+                console.error("No se pudo determinar la estación más cercana a partir de la respuesta de Google.");
+                callback(null);
+              }
+            } else {
+              console.error("Error en la solicitud a Google Maps Distance Matrix:", status);
+              callback(null);
+            }
+          });
+        }
+
+        // Función que calcula la distancia entre dos coordenadas (usando la fórmula de haversine)
+        function haversineDistance(coord1, coord2) {
+        	
+        let lng2;
+        	if (coord2.lng == null){
+        		lng2 = 	coord2.lon;
+        	}
+        	else{        		
+        		lng2 = 	coord2.lng;
+        	}
+        	
+          const R = 6371; // Radio de la Tierra en km
+          const dLat = (parseFloat(coord2.lat) - parseFloat(coord1.lat)) * Math.PI / 180;
+          const dLon = (parseFloat(lng2) - parseFloat(coord1.lng)) * Math.PI / 180;
+          const a = Math.sin(dLat / 2) ** 2 +
+                    Math.cos(parseFloat(coord1.lat) * Math.PI / 180) * Math.cos(parseFloat(coord2.lat) * Math.PI / 180) *
+                    Math.sin(dLon / 2) ** 2;
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          return R * c;
+        }
+
+        function moveToMidPointMarkers(marker1, marker2) {
+            // Calcular el punto medio
+            let midLat = (marker1.lat + marker2.lat) / 2;
+            let midLng = (marker1.lng + marker2.lng) / 2;
+
+            // Crear bounds con los dos puntos
+            let bounds = L.latLngBounds([marker1, marker2]);
+
+            // Mover la cámara con animación
+            map.flyToBounds(bounds, {
+                padding: [70, 70], // Espaciado extra alrededor
+                duration: 1.5      // Duración de la animación en segundos
+            });
+        }
+
+        map.on('click', function (e) {
+            if (!pointA) {
+                pointA = e.latlng;
+                markerA = createMarker(pointA, "red");
+                document.getElementById('distance-info').innerText = "Seleccione un nuevo punto B.";
+            } else if (!pointB) {
+                pointB = e.latlng;
+                markerB = createMarker(pointB, "blue");
+                seleccionaOpcionTransporte();
+            } else {
+             
+                map.removeLayer(markerA);
+                map.removeLayer(markerB);
+                pointB = null;
+                pointA = null;
+               distancia_total = 0;
+               segundos_total = 0;
+               
+                if (routePolyline) {
+                	  routePolyline.forEach(item => {
+                	    map.removeLayer(item);
+                	  });
+                      routePolyline = [];
+                	}
+
+                document.getElementById('distance-info').innerText = "Seleccione un nuevo punto A.";
+            }
+        });
+
+        
+        
+        map.on('zoomend', function () {
+            let zoom = map.getZoom();
+            let size = zoom < 10 ? 7    
+                     : zoom < 13 ? 10
+                     : zoom < 14 ? 13
+                     : zoom < 15 ? 19
+                     : 25;  
+
+            markers.forEach(marker => {
+                let color = marker.tipo === "metro" ? "red" :
+                            marker.tipo === "bus" ? "green" : "blue";
+
+                let letter = marker.tipo === "metro" ? "M" :
+                             marker.tipo === "bus" ? "B" : "V";
+
+                marker.setIcon(createCustomIcon(size, letter, color));
+            });
+        });
+        
+        
+        function seleccionaOpcionTransporte() {
+            // Crear el modal
+            let modal = document.createElement("div");
+            modal.style.position = "fixed";
+            modal.style.top = "0";
+            modal.style.left = "0";
+            modal.style.width = "100%";
+            modal.style.height = "100%";
+            modal.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+            modal.style.display = "flex";
+            modal.style.justifyContent = "center";
+            modal.style.alignItems = "center";
+            modal.style.zIndex = "9999"; // Asegurar que está delante de todo
+
+            let modalContent = document.createElement("div");
+            modalContent.style.background = "#fff";
+            modalContent.style.padding = "20px";
+            modalContent.style.borderRadius = "10px";
+            modalContent.style.textAlign = "center";
+            modalContent.style.boxShadow = "0 4px 6px rgba(0, 0, 0, 0.1)";
+
+            let title = document.createElement("h3");
+            title.innerText = "Selecciona un modo de transporte";
+            modalContent.appendChild(title);
+
+            let botones = [
+                { texto: "Andando", valor: "WALKING" },
+                { texto: "Coche", valor: "DRIVING" },
+                { texto: "Bicicleta", valor: "BICYCLING" },
+                { texto: "Metro", valor: "METRO" },
+                { texto: "Autobus", valor: "BUS" },
+                { texto: "Valenbici", valor: "BICI" },
+                { texto: "Comparalos todos", valor: "COMPARA" }
+            ];
+
+            botones.forEach(boton => {
+                let btn = document.createElement("button");
+                btn.innerText = boton.texto;
+                btn.style.margin = "10px";
+                btn.style.padding = "10px 20px";
+                btn.style.border = "none";
+                btn.style.cursor = "pointer";
+                btn.style.borderRadius = "5px";
+                btn.style.background = "#007bff";
+                btn.style.color = "white";
+                btn.onclick = function() {
+                    transportMode = boton.valor;
+                    document.body.removeChild(modal);
+                    calculateDistanceAndRoute();
+                };
+                modalContent.appendChild(btn);
+            });
+
+            modal.appendChild(modalContent);
+            document.body.appendChild(modal);
+        }
+        
+        
+        function mostrarTablaResultados(results) {
+            let modal = document.createElement("div");
+            modal.style.position = "fixed";
+            modal.style.top = "0";
+            modal.style.left = "0";
+            modal.style.width = "100%";
+            modal.style.height = "100%";
+            modal.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+            modal.style.display = "flex";
+            modal.style.justifyContent = "center";
+            modal.style.alignItems = "center";
+            modal.style.zIndex = "9999";
+
+            let modalContent = document.createElement("div");
+            modalContent.style.background = "#fff";
+            modalContent.style.padding = "20px";
+            modalContent.style.borderRadius = "10px";
+            modalContent.style.textAlign = "center";
+            modalContent.style.boxShadow = "0 4px 6px rgba(0, 0, 0, 0.1)";
+
+            let title = document.createElement("h3");
+            title.innerText = "Comparación de modos de transporte";
+            modalContent.appendChild(title);
+
+            let table = document.createElement("table");
+            table.style.width = "100%";
+            table.style.borderCollapse = "collapse";
+            table.style.marginTop = "20px";
+
+            let thead = document.createElement("thead");
+            let headerRow = document.createElement("tr");
+            ["Modo de Transporte", "Distancia", "Tiempo", "CO2 Emitido"].forEach(text => {
+                let th = document.createElement("th");
+                th.innerText = text;
+                th.style.border = "1px solid #ddd";
+                th.style.padding = "10px";
+                th.style.background = "#f4f4f4";
+                headerRow.appendChild(th);
+            });
+            thead.appendChild(headerRow);
+            table.appendChild(thead);
+
+            let tbody = document.createElement("tbody");
+            results.forEach(result => {
+                let row = document.createElement("tr");
+                [result.mode, result.distanceText, result.durationText, result.co2Emissions].forEach(value => {
+                    let td = document.createElement("td");
+                    td.innerText = value;
+                    td.style.border = "1px solid #ddd";
+                    td.style.padding = "10px";
+                    row.appendChild(td);
+                });
+                tbody.appendChild(row);
+            });
+            table.appendChild(tbody);
+            modalContent.appendChild(table);
+            
+            let closeButton = document.createElement("button");
+            closeButton.innerText = "Cerrar";
+            closeButton.style.marginTop = "15px";
+            closeButton.onclick = () => document.body.removeChild(modal);
+            modalContent.appendChild(closeButton);
+            
+            modal.appendChild(modalContent);
+            document.body.appendChild(modal);
+        }
+        
+        function createCustomIcon(size, letter, color) {
+            return L.divIcon({
+                className: 'custom-icon',
+                html: `<div style="
+                            width: ${size}px;
+                            height: ${size}px;
+                            background: ${color};
+                            color: white;
+                            text-align: center;
+                            font-weight: bold;
+                            font-size: ${size / 2}px;
+                            border-radius: 50%;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;">
+                        ${letter}
+                    </div>`,
+                iconSize: [size, size],
+                iconAnchor: [size / 2, size / 2]
+            });
+        }
+        
+        let metroLines = {}; 
+        const metroColors = {
+            "1": "#E4BE36", 
+            "2": "#B4397F", 
+            "3": "#B11D2F", 
+            "4": "#2B498B", 
+            "5": "#4E886D", 
+            "6": "#817FB3", 
+            "7": "#CE7D28", 
+            "8": "#96C4DA", 
+            "9": "#A47E52", 
+            "10": "#B6DD79" 
+        };
+
+        // Definir las estaciones de cada línea en orden
+        const metroStations = {
+            "1": [
+            	"Castelló", "Alberic", "Massalavés", "Montortal", "L'Alcúdia", "Benimodo", "Carlet", "Ausiàs March", "Alginet", "Font Almaguer", "Espioca", "Omet", "Picassent", "Sant Ramon", "Realón", "Col·legi El Vedat", "Torrent", "Pinanya", "Paiporta", "València Sud", "Sant Isidre", "Safranar", "Patraix", "Jesús", "Pl. Espanya", "Àngel Guimerà",
+                "Túria", "Campanar", "Beniferri", "Empalme", "Burjassot", "Burjassot - Godella",
+                "Godella", "Rocafort", "Massarrojos", "Moncada - Alfara", "Seminari - CEU",
+                "Masies", "Horta Vella", "Bétera"
+            ],
+            "2": [
+            	"Torrent Avinguda", "Torrent", "Pinanya", "Paiporta", "València Sud", "Sant Isidre", "Safranar", "Patraix", "Jesús", "Pl. Espanya", "Àngel Guimerà",
+                "Túria", "Campanar", "Beniferri", "Empalme", "Cantereria", "Benimàmet",
+                "Les Carolines - Fira", "Campament", "Paterna", "Santa Rita", "Fuente del Jarro",
+                "Font del Barranc", "La Canyada", "La Vallesa", "Entrepins", "El Clot", "Montesol",
+                "L'Eliana", "Gallipont - Torre del Virrei", "La Pobla de Vallbona",
+                "Fondo de Benaguasil", "Benaguasil", "Llíria"
+            ],
+            "3": [
+                "Aeroport", "Roses", "Manises", "Salt de l'Aigua", "Quart de Poblet", "Faitanar", 
+                "Mislata Almassil", "Mislata", "Nou d'Octubre", "Av. del Cid", "Àngel Guimerà", 
+                "Xàtiva", "Colón", "Alameda", "Facultats - Manuel Broseta", "Benimaclet", "Machado", 
+                "Alboraia Palmaret", "Alboraia Peris Aragó", "Almàssera", "Meliana", "Foios", 
+                "Albalat dels Sorells", "Museros", "Massamagrell", "La Pobla de Farnals", "Rafelbunyol"
+            ],
+
+            "4": [
+                "Dr. Lluch", "Platja les Arenes", "Cabanyal", "Platja Malva-rosa", "La Cadena", 
+                "Beteró", "Tarongers - Ernest Lluch", "La Carrasca", "Universitat Politècnica", 
+                "Vicente Zaragozá", "Benimaclet", "Trinitat", "Pont de Fusta", "Sagunt", "Reus", 
+                "Marxalenes", "Trànsits", "Benicalap", "Garbí", "Florista", "Palau de Congressos", 
+                "Empalme", "La Granja", "Sant Joan", "Campus", "Vicent Andrés Estellés", "À Punt", 
+                "Fira València", "Ll. Llarga - Terramelar", "Parc Científic", "Tomás y Valiente", 
+                "La Coma", "Mas del Rosari"
+            ],
+            "5": [
+                "Aeroport", "Roses", "Manises", "Salt de l'Aigua", "Quart de Poblet", "Faitanar", 
+                "Mislata Almassil", "Mislata", "Nou d'Octubre", "Av. del Cid", "Àngel Guimerà", 
+                "Xàtiva", "Colón", "Alameda", "Aragó", "Amistat", "Ayora", "Marítim"
+            ],
+            "6": [
+                "Marítim", "Francesc Cubells", "Grau - La Marina", "Canyamelar", "Dr. Lluch", 
+                "Cabanyal", "Platja les Arenes", "Platja Malva-rosa", "La Cadena", "Beteró", 
+                "Tarongers - Ernest Lluch", "La Carrasca", "Universitat Politècnica", 
+                "Vicente Zaragozá", "Benimaclet", "Trinitat", "Alfauir", "Orriols", 
+                "Estadi Ciutat de València", "Sant Miquel dels Reis", "Tossal del Rei"
+            ],
+            "7": [
+            	"Torrent Avinguda", "Torrent", "Pinanya", "Paiporta", "València Sud", "Sant Isidre", "Safranar", "Patraix", "Jesús", "Bailén", "Colón", "Alameda", 
+                "Aragó", "Amistat", "Ayora", "Marítim"
+            ],
+            
+            "8": [
+                "Marítim", "Francesc Cubells", "Grau - La Marina", "Neptú"
+                ],
+            "9": [
+                "Riba-roja de Túria", "Masia de Traver", "València la Vella", "La Presa", "La Cova", 
+                "Roses", "Manises", "Salt de l'Aigua", "Quart de Poblet", "Faitanar", "Mislata Almassil", 
+                "Mislata", "Nou d'Octubre", "Av. del Cid", "Àngel Guimerà", "Xàtiva", "Colón", 
+                "Alameda", "Facultats - Manuel Broseta", "Benimaclet", "Machado", "Alboraia Palmaret", 
+                "Alboraia Peris Aragó"
+            ],
+            "10": [
+                "Bailén", "Alacant", "Russafa", "Amado Granell - Montolivet", "Quatre Carreres", 
+                "Ciutat Arts i Ciències - Justícia", "Oceanogràfic", "Moreres", "Natzaret"
+            ]
+
+        };
+
+       
+        document.getElementById('transport-select').addEventListener('change', function () {
+            toggleTransport(this.value);
+        });
+
+        function toggleTransport(selectedType) {
+            console.log("Filtrando transporte:", selectedType);
+
+            markers.forEach(marker => map.removeLayer(marker));
+            metroLinesPolylines.forEach(polyline => map.removeLayer(polyline));
+
+            markers = [];
+            metroLinesPolylines = [];
+
+            if (selectedType !== "none") {
+                pendingMarkers.forEach(marker => {
+                    if (marker.tipo === selectedType) {
+                        marker.addTo(map);
+                        markers.push(marker);
+                    }
+                });
+
+                if (selectedType === "metro") {
+                    pendingPolylines.forEach(polyline => {
+                        polyline.addTo(map);
+                        metroLinesPolylines.push(polyline);
+                    });
+                }
+            }
+        }
+
+        let metroLinesPolylines = []; // Guardamos aquí las líneas dibujadas
+
+  
+
+
+        // Al cargar, todo está oculto por defecto
+        
+let pendingMarkers = []; // Array temporal para almacenar marcadores antes de mostrarlos
+let pendingPolylines = []; // Array para líneas de metro antes de mostrarlas
+
+async function loadAllMetroStations(urls) {
+    await Promise.all(urls.map(url => fetch(url).then(response => response.json())))
+        .then(responses => {
+            let allStations = responses.flatMap(data => data.results);
+            processMetroStations(allStations);
+        })
+        .catch(error => console.error("Error cargando estaciones del metro:", error));
+}
+
+let metroCoordinates = {};
+let stationUsage = {}; 
+
+function processMetroStations(stations) {
+
+
+    Object.keys(metroStations).forEach(linea => metroCoordinates[linea] = []);
+
+    stations.forEach(station => {
+        let lat = station.geo_point_2d.lat;
+        let lon = station.geo_point_2d.lon;
+        let name = station.nombre;
+        let proximasLlegadas = station.proximas_llegadas;
+
+        let marker = L.marker([lat, lon], {
+            icon: createCustomIcon(20, "M", "red"),
+        }).bindPopup(`<strong>${name}</strong><br><a href="${proximasLlegadas}" target="_blank">Próximas llegadas</a>`);
+
+        marker.tipo = "metro";
+        pendingMarkers.push(marker); // Guardar en el array temporal, no en el mapa aún
+
+        Object.keys(metroStations).forEach(linea => {
+            if (metroStations[linea].includes(name)) {
+                if (!stationUsage[name]) {
+                    stationUsage[name] = {name, lat, lon, lines: [] };
+                }
+                stationUsage[name].lines.push(linea);
+                metroCoordinates[linea].push({ name, lat, lon });
+            }
+        });
+    });
+
+    Object.keys(metroStations).forEach(linea => {
+        metroCoordinates[linea].sort((a, b) => metroStations[linea].indexOf(a.name) - metroStations[linea].indexOf(b.name));
+        metroLines[linea] = metroCoordinates[linea];
+    });
+
+    drawMetroLines();
+}
+
+
+
+function drawMetroLines() {
+	  pendingPolylines = []; // Reiniciar el array antes de dibujar
+
+	  // 1. Contar la cantidad de apariciones de cada coordenada en todas las líneas
+	  let coordinateCounts = {};
+	  Object.keys(metroLines).forEach(linea => {
+	    metroLines[linea].forEach(coord => {
+	      let key = `${coord.lat},${coord.lon}`;
+	      coordinateCounts[key] = (coordinateCounts[key] || 0) + 1;
+	    });
+	  });
+
+	  // Objeto para llevar el seguimiento del offset aplicado en cada coordenada
+	  let positionOffset = {};
+
+	  // 2. Dibujar cada línea aplicando offset solo en coordenadas compartidas por más de una línea
+	  Object.keys(metroLines).forEach(linea => {
+	    if (metroLines[linea].length > 1) {
+	      let coordinates = metroLines[linea];
+	      let color = metroColors[linea] || "#000";
+
+	      let adjustedCoordinates = coordinates.map(coord => {
+	        let key = `${coord.lat},${coord.lon}`;
+	        // Si la coordenada solo aparece en una línea, no se aplica offset
+	        if (coordinateCounts[key] === 1) {
+	          return { lat: coord.lat, lon: coord.lon };
+	        }
+
+	        // Si la coordenada es compartida, aplicamos un offset distinto para cada ocurrencia
+	        if (!positionOffset[key]) {
+	          positionOffset[key] = 0;
+	        }
+	        let offsetIndex = positionOffset[key]++;
+	        let offsetAmount = 0.0010; // Ajusta el valor si es necesario
+	        let angle = offsetIndex * (Math.PI / 6); // Variar dirección según la ocurrencia
+	        let latOffset = Math.sin(angle) * offsetAmount;
+	        let lonOffset = Math.cos(angle) * offsetAmount;
+
+	        return { lat: coord.lat + latOffset, lon: coord.lon + lonOffset };
+	      });
+
+	      let polyline = L.polyline(
+	        adjustedCoordinates.map(coord => [coord.lat, coord.lon]),
+	        {
+	          color: color,
+	          weight: 7,
+	          opacity: 1
+	        }
+	      );
+
+	      pendingPolylines.push(polyline); // Guardar la polilínea en el array temporal
+	    }
+	  });
+	}
+
+
+ 
+function loadBusStations(url) {
+    return fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.results) {
+                data.results.forEach(station => {
+                    let lat = station.geo_point_2d.lat;
+                    let lon = station.geo_point_2d.lon;
+                    let denominacion = station.denominacion;
+                    let lineas = station.lineas;
+                    let proximasLlegadas = station.proximas_llegadas;
+
+                    let marker = L.marker([lat, lon], {
+                        icon: createCustomIcon(20, "B", "green"),
+                    }).bindPopup(`<strong>${denominacion}<br> Líneas ${lineas}</strong><br><a href="${proximasLlegadas}" target="_blank">Próximas llegadas</a>`);
+
+                    marker.tipo = "bus"; 
+                    pendingMarkers.push(marker); // Guardar en el array temporal
+                });
+            }
+        });
+}
+
+
+
+function loadValenBiciStations(url) {
+    return fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.results) {
+               // valenbisiStations = []; // Limpiar antes de cargar nuevas estaciones
+                
+                data.results.forEach(station => {
+                    let lat = station.geo_point_2d.lat;
+                    let lon = station.geo_point_2d.lon;
+                    let address = station.address;
+                    let available = station.available;
+                    let total = station.total;
+
+                    let marker = L.marker([lat, lon], {
+                        icon: createCustomIcon(20, "V", "blue"),
+                    }).bindPopup(`<strong>${address}</strong><br>Bicis disponibles: ${available} / ${total}`);
+
+                    marker.tipo = "bici";
+                    pendingMarkers.push(marker); // Guardar en el array temporal
+
+                    // 📌 Guardar la estación en la lista global
+                    valenbisiStations.push({ lat, lon, address, available, total });
+                });
+            }
+        })
+        .catch(error => console.error("Error al cargar estaciones de Valenbisi:", error));
+}
+
+
+const originInput = document.getElementById("origin-input");
+const destinationInput = document.getElementById("destination-input");
+
+const originAutocomplete = new google.maps.places.Autocomplete(originInput);
+const destinationAutocomplete = new google.maps.places.Autocomplete(destinationInput);
+
+const minLat = 39.00, maxLat = 39.9;
+const minLng = -0.75, maxLng = 0.1;
+
+function isWithinBounds(latlng) {
+    return (
+        latlng.lat >= minLat && latlng.lat <= maxLat &&
+        latlng.lng >= minLng && latlng.lng <= maxLng
+    );
+}
+
+// Cuando se hace click en el botón "Establecer dirección"
+document.getElementById("set-directions").addEventListener("click", function() {
+	
+  const originAddress = originInput.value;
+  const destinationAddress = destinationInput.value;
+  distancia_total = 0;
+  segundos_total = 0;
+  
+   if (routePolyline) {
+   	  routePolyline.forEach(item => {
+   	    map.removeLayer(item);
+   	  });
+         routePolyline = [];
+   	}
+   
+  if (!originAddress || !destinationAddress) {
+    alert("Por favor, ingrese tanto origen como destino.");
+    return;
+  }
+
+  const geocoder = new google.maps.Geocoder();
+
+  // Geocode para la dirección de origen
+  geocoder.geocode({ address: originAddress }, function(results, status) {//
+    if (status === google.maps.GeocoderStatus.OK && results[0]) {
+      const originLocation = results[0].geometry.location;
+      // Convierte la posición de Google a un objeto LatLng de Leaflet
+      pointA = L.latLng(originLocation.lat(), originLocation.lng());
+
+      // Si ya existe un marker, se elimina
+      if (markerA) {
+        map.removeLayer(markerA);
+      }
+      
+      if (!isWithinBounds(pointA)) {
+          alert("La dirección de origen está fuera del área permitida.");
+          return;
+      }
+      
+      markerA = createMarker(pointA, "red");
+
+      // Geocode para la dirección de destino
+      geocoder.geocode({ address: destinationAddress }, function(results2, status2) {
+        if (status2 === google.maps.GeocoderStatus.OK && results2[0]) {
+          const destinationLocation = results2[0].geometry.location;
+          pointB = L.latLng(destinationLocation.lat(), destinationLocation.lng());
+
+          
+          if (!isWithinBounds(pointB)) {
+              alert("La dirección de destino está fuera del área permitida.");
+              return;
+          }
+	        
+          if (markerB) {
+            map.removeLayer(markerB);
+          }
+          markerB = createMarker(pointB, "blue");
+
+          document.getElementById("distance-info").innerText = "Origen y destino establecidos.";
+          // Centrar el mapa entre ambos puntos
+          moveToMidPointMarkers(pointA, pointB);
+
+          // Opcional: Llama a la función para calcular/dibujar la ruta según la opción de transporte
+          seleccionaOpcionTransporte();
+        } else {
+          alert("No se encontró la dirección de destino: " + status2);
+        }
+      });
+    } else {
+      alert("No se encontró la dirección de origen: " + status);
+    }
+  });
+});
+
+
+// Función que espera a que todas las estaciones se carguen
+async function loadAllData() {
+    const urlsMetro = [
+        "https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/fgv-estacions-estaciones/records?limit=100",
+        "https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/fgv-estacions-estaciones/records?limit=42&offset=100"
+    ];
+
+    // Array de promesas de carga
+    const promises = [
+        loadAllMetroStations(urlsMetro),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=100"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=200"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=300"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=400"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=500"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=600"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=700"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=800"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=900"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=100&offset=1000"),
+        loadBusStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/emt/records?limit=26&offset=1100"),
+        loadValenBiciStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/valenbisi-disponibilitat-valenbisi-dsiponibilidad/records?limit=100"),
+        loadValenBiciStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/valenbisi-disponibilitat-valenbisi-dsiponibilidad/records?limit=100&offset=100"),
+        loadValenBiciStations("https://valencia.opendatasoft.com/api/explore/v2.1/catalog/datasets/valenbisi-disponibilitat-valenbisi-dsiponibilidad/records?limit=73&offset=200")
+    ];
+
+    // Esperar a que todas las promesas terminen
+    await Promise.all(promises);
+
+    // Una vez que todo esté cargado, ocultar los transportes
+    console.log("🚀 Todas las estaciones cargadas, ocultando transportes");
+    toggleTransport("none");
+}
+
+// Llamar a la función que carga todo
+loadAllData();
+
+
+
+    </script>
+</body>
+</html>
